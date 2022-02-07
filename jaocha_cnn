@@ -1,0 +1,151 @@
+import math
+import pandas as pd
+from sklearn.model_selection import KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import confusion_matrix, recall_score, accuracy_score, precision_score, roc_curve, auc
+import torch
+import keras
+import tensorflow as tf
+from keras import layers
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.python.keras.utils import np_utils
+import numpy as np
+import random
+from keras.layers import LSTM
+from sklearn import model_selection
+from keras.layers import Dense, Activation, Dropout
+# 同步式分布式策略，单机多卡训练
+mirrored_strategy = tf.distribute.MirroredStrategy()
+
+# 导入数据
+savepath = '/home/stu1/xyx/sulf/sulf_cnn'
+model_name = 'cnn_KNNpeptide_delate_10'
+
+data = []
+label = []
+for line in open("/home/stu1/wjr/others/sss/iLearn-master/encoding/KNNpeptide.txt","r"): #设置文件对象并读取每一行文件
+    line=line.strip('\n')
+    #print(line)
+    label.append(int(line.split('\t')[0]))
+    #print(line.split('\t')[0])   
+    nums = line.split('\t')[1:] 
+    #print(nums)  
+    nums = [float(x) for x in nums]
+    #print(nums)                           
+    data.append(nums)#将每一行文件加入到list中
+
+
+print(np.shape(data))
+#print(data)
+print(np.shape(label))
+
+data= np.array(data)
+y = np.array(label)
+random.seed(42)
+x_1 = list(data[y==1])
+x_0 = list(data[y==0])
+x_new_0 = random.sample(x_0,len(x_1)+400)
+y =np.hstack((np.ones(len(x_1)),np.zeros(len(x_1)+400)))
+#print(y)
+print(len(x_1))
+print(len(x_0))
+print(len(x_new_0))
+x = np.vstack((np.array(x_1),np.array(x_new_0)))
+print('转换后个数',x.shape)
+long = x.shape[1]
+x = x.reshape(x.shape[0],x.shape[1],1)
+
+y = y.reshape(len(y),1)
+x_train, x_test, y_train, y_test = model_selection.train_test_split( x, y, test_size=0.1, random_state=42)
+#x_val, x_test, y_val, y_test = model_selection.train_test_split( x_val_test, y_val_test, test_size=0.333, random_state=42)
+print('训练集个数',x_train.shape)
+print(y_train)
+#print(x_val_test.shape)
+#print('验证集个数',x_val.shape[0])
+print('测试集个数',x_test.shape)
+#smo = SMOTE(random_state=42)
+#x_train, y_train = smo.fit_resample(x_train, y_train)
+y_train = y_train.reshape(y_train.shape[0],1)
+print('训练集个数',x_train.shape)
+##x_train = x_train.reshape(x_train.shape[0],1,x_train.shape[1])
+#x_val = x_val.reshape(x_val.shape[0],1,x_val.shape[1])
+#x_test = x_test.reshape(x_test.shape[0],1,x_test.shape[1])
+i=1
+results = []
+TEST_results = []
+skf= KFold(n_splits=10, shuffle=True, random_state=0)
+y_test_label = y_test.astype('int')
+y_test = Y_train = np_utils.to_categorical(y_test)
+for train_index, test_index in skf.split(x_train): 
+    Y_train_label = y_train[train_index].astype('int')
+    Y_val_label = y_train[test_index].astype('int')
+    Y_train = np_utils.to_categorical(Y_train_label)
+    Y_val = np_utils.to_categorical(Y_val_label)
+    
+    with mirrored_strategy.scope():
+        # 建立MLP模型
+        model = Sequential()
+    # set the first hidden layer and set the input dimension
+        model = Sequential()
+    # set the first hidden layer and set the input dimension
+        model.add(layers.Conv1D(filters=64, kernel_size=2, activation='relu', input_shape=(long,
+        1)))
+        model.add(layers.MaxPooling1D(pool_size=2))
+        model.add(layers.Conv1D(filters=128, kernel_size=2, activation='relu'))
+        model.add(layers.MaxPooling1D(pool_size=2))
+        model.add(layers.Flatten())
+        model.add(Dense(50, activation='relu'))
+        model.add(Dense(2,activation='sigmoid'))
+
+        model.compile(loss='binary_crossentropy', optimizer='Adam',metrics=['accuracy'])
+
+        # model.summary()
+    tb_callback = tf.keras.callbacks.TensorBoard(log_dir="logs/run{}".format(i), histogram_freq=1)
+    filepath="/home/stu1/xyx/sulf/sulf_cnn/logs/run{}.h5".format(i)
+    history = model.fit(x_train[train_index], Y_train, epochs=100, batch_size=189, callbacks = [
+        keras.callbacks.ModelCheckpoint(filepath, monitor='val_loss', verbose=0, save_best_only=True, mode='auto'),
+        keras.callbacks.EarlyStopping(monitor='val_loss', patience=30, verbose=0, mode='auto')
+        ])
+    i += 1
+    score = model.evaluate(x_train[test_index], Y_val, verbose=0)  
+    print(score)
+    Y_pro = model.predict(x_train[test_index])
+    Y_pro = torch.Tensor(Y_pro)
+    Y_pre = torch.argmax(Y_pro, 1)
+    Y_pre = Y_pre.numpy()
+    matrix = confusion_matrix(Y_val_label, Y_pre, labels=[1, 0])    # 混淆矩阵
+    TP, FN, FP, TN = matrix[0][0], matrix[0][1], matrix[1][0], matrix[1][1]
+    sensitivity = recall_score(Y_val_label, Y_pre, labels=[1, 0])   # 敏感性
+    precision = precision_score(Y_val_label, Y_pre, labels=[1, 0])  # 精准性
+    accuracy = accuracy_score(Y_val_label, Y_pre)
+    specificity = TN / (TN + FP)    # 特异性 
+    mcc = (TP * TN - FP * FN) / math.sqrt((TP + FN)*(TP+FP)*(TN+FP)*(TN+FN))   # 马氏相关系数
+    fpr, tpr, _ = roc_curve(y_train[test_index].astype('int'), Y_pre)
+    AUC = auc(fpr, tpr)
+    results.append([sensitivity, specificity, precision, accuracy, mcc, AUC])
+    Y_test_pro = model.predict(x_test)
+    Y_test_pro = torch.Tensor(Y_test_pro)
+    Y_test_pre = torch.argmax(Y_test_pro, 1)
+    Y_test_pre = Y_test_pre.numpy()
+    matrix_test = confusion_matrix(y_test_label, Y_test_pre, labels=[1, 0])    # 混淆矩阵
+    TP_test, FN_test, FP_test, TN_test = matrix_test[0][0], matrix_test[0][1], matrix_test[1][0], matrix_test[1][1]
+    sensitivity_test = recall_score(y_test_label,Y_test_pre, labels=[1, 0])   # 敏感性
+    precision_test = precision_score(y_test_label, Y_test_pre, labels=[1, 0])  # 精准性
+    accuracy_test = accuracy_score(y_test_label, Y_test_pre)
+    specificity_test = TN_test / (TN_test + FP_test)    # 特异性 
+    mcc_test = (TP_test * TN_test - FP_test * FN_test) / math.sqrt((TP_test + FN_test)*(TP_test+FP_test)*(TN_test+FP_test)*(TN_test+FN_test))   # 马氏相关系数
+    fpr_test, tpr_test, _ = roc_curve(y_test_label, Y_test_pre)
+    AUC_test = auc(fpr_test, tpr_test)
+    TEST_results.append([sensitivity_test, specificity_test, precision_test, accuracy_test, mcc_test, AUC_test])
+col = ['sensitivity', 'specificity', 'precision', 'accuracy', 'mcc', 'auc']
+row = ['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10']
+result = pd.DataFrame(results, columns=col, index=row)
+test_result = pd.DataFrame(TEST_results, columns=col, index=row)
+print(result)
+print(test_result)
+# savefile = '/home/stu1/audrey/malonylation/outputs/MLP.xlsx'
+# result.to_excel(savefile)
+
+    
+    
